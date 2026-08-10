@@ -1,5 +1,3 @@
-"use client";
-
 import { ChangeEvent, PointerEvent, useEffect, useRef, useState } from "react";
 import { decompressFrames, parseGIF, type ParsedFrame } from "gifuct-js";
 import { GIFEncoder, applyPalette, quantize } from "gifenc";
@@ -27,7 +25,7 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-export default function Home() {
+export default function App() {
   const imageRef = useRef<HTMLImageElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -40,7 +38,11 @@ export default function Home() {
   const [exporting, setExporting] = useState<IconId | "both" | null>(null);
   const [message, setMessage] = useState("");
 
-  useEffect(() => () => imageUrl && URL.revokeObjectURL(imageUrl), [imageUrl]);
+  useEffect(() => {
+    return () => {
+      if (imageUrl) URL.revokeObjectURL(imageUrl);
+    };
+  }, [imageUrl]);
 
   const keepInBounds = (crop: Crop): Crop => {
     const maxSize = Math.min(dimensions.width, dimensions.height);
@@ -178,7 +180,8 @@ export default function Home() {
       restoreFrame = frame.disposalType === 3
         ? fullContext.getImageData(0, 0, fullCanvas.width, fullCanvas.height)
         : null;
-      fullContext.putImageData(new ImageData(frame.patch, frame.dims.width, frame.dims.height), frame.dims.left, frame.dims.top);
+      const framePixels = new Uint8ClampedArray(frame.patch);
+      fullContext.putImageData(new ImageData(framePixels, frame.dims.width, frame.dims.height), frame.dims.left, frame.dims.top);
       cropContext.clearRect(0, 0, crop.size, crop.size);
       cropContext.drawImage(fullCanvas, crop.x, crop.y, crop.size, crop.size, 0, 0, crop.size, crop.size);
       writeGifFrame(encoder, cropCanvas, frame, frameNumber);
@@ -186,7 +189,7 @@ export default function Home() {
     });
 
     encoder.finish();
-    saveBlob(new Blob([encoder.bytes()], { type: "image/gif" }), filenameFor(icon, "gif"));
+    saveBlob(new Blob([new Uint8Array(encoder.bytes())], { type: "image/gif" }), filenameFor(icon, "gif"));
   };
 
   const download = async (icon: IconId) => {
@@ -252,8 +255,6 @@ export default function Home() {
               onPointerUp={() => setDrag(null)}
               onPointerCancel={() => setDrag(null)}
             >
-              {/* A imagem usa uma URL local e precisa permanecer acessível ao canvas de exportação. */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 ref={imageRef}
                 src={imageUrl}

@@ -1,6 +1,6 @@
 # Matching Icon Cropper
 
-Editor local para criar dois matching icons a partir de uma imagem.
+Aplicativo desktop para Windows que cria dois matching icons a partir de uma imagem.
 
 ## Recursos
 
@@ -8,10 +8,14 @@ Editor local para criar dois matching icons a partir de uma imagem.
 - Nomes personalizados para cada ícone
 - Movimento e redimensionamento por arraste ou controles
 - Exportação em PNG
-- Preservação da animação ao recortar GIFs
-- Processamento feito no navegador
+- Preservação da animação de GIFs
+- Processamento local, sem enviar imagens para a internet
 
-## Rodar localmente
+## Executável portátil
+
+Baixe `Matching Icon Cropper-0.1.0-portable.exe` na seção **Releases** do repositório. O aplicativo não precisa ser instalado.
+
+## Desenvolvimento
 
 Requer Node.js 22.13 ou mais recente.
 
@@ -20,9 +24,10 @@ npm install
 npm run dev
 ```
 
-## Validar o projeto
+Para gerar o executável:
 
 ```bash
-npm run lint
-npm run build
+npm run package
 ```
+
+O arquivo será criado na pasta `release`.
