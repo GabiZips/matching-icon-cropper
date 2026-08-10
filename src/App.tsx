@@ -1,6 +1,7 @@
 import { ChangeEvent, PointerEvent, useEffect, useRef, useState } from "react";
 import { decompressFrames, parseGIF, type ParsedFrame } from "gifuct-js";
 import { GIFEncoder, applyPalette, quantize } from "gifenc";
+import appIcon from "../assets/app-icon.png";
 
 type Crop = { x: number; y: number; size: number };
 type IconId = "icon1" | "icon2";
@@ -20,6 +21,7 @@ const INITIAL_CROPS: Record<IconId, Crop> = {
 };
 
 const INITIAL_NAMES: Record<IconId, string> = { icon1: "Ícone 1", icon2: "Ícone 2" };
+const INITIAL_COLORS: Record<IconId, string> = { icon1: "#e35da7", icon2: "#45c7ba" };
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -33,6 +35,7 @@ export default function App() {
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [crops, setCrops] = useState<Record<IconId, Crop>>(INITIAL_CROPS);
   const [names, setNames] = useState<Record<IconId, string>>(INITIAL_NAMES);
+  const [colors, setColors] = useState<Record<IconId, string>>(INITIAL_COLORS);
   const [active, setActive] = useState<IconId>("icon1");
   const [drag, setDrag] = useState<Drag>(null);
   const [exporting, setExporting] = useState<IconId | "both" | null>(null);
@@ -232,9 +235,12 @@ export default function App() {
   return (
     <main>
       <section className="hero">
-        <p className="eyebrow">MATCHING ICONS</p>
-        <h1>Corte seus matching icons do seu jeito.</h1>
-        <p className="intro">Envie uma imagem de qualquer dupla, ajuste os dois quadrados e baixe cada recorte no tamanho original. GIFs continuam animados.</p>
+        <img className="app-logo" src={appIcon} alt="" />
+        <div>
+          <p className="eyebrow">MATCHING ICONS</p>
+          <h1>Corte seus matching icons do seu jeito.</h1>
+          <p className="intro">Envie uma imagem de qualquer dupla, ajuste os dois quadrados e baixe cada recorte no tamanho original. GIFs continuam animados.</p>
+        </div>
       </section>
 
       <section className="workspace" aria-label="Editor de recortes">
@@ -273,6 +279,8 @@ export default function App() {
                     key={icon}
                     className={`crop-box ${icon} ${selected ? "selected" : ""}`}
                     style={{
+                      color: colors[icon],
+                      borderColor: colors[icon],
                       left: `${(crop.x / dimensions.width) * 100}%`,
                       top: `${(crop.y / dimensions.height) * 100}%`,
                       width: `${(crop.size / dimensions.width) * 100}%`,
@@ -295,14 +303,14 @@ export default function App() {
         <aside className="controls">
           <div className="tabs" role="tablist" aria-label="Ícone selecionado">
             {ICON_IDS.map((icon) => (
-              <button key={icon} className={active === icon ? "active" : ""} onClick={() => setActive(icon)} role="tab" aria-selected={active === icon}>
+              <button key={icon} style={{ color: colors[icon] }} className={active === icon ? "active" : ""} onClick={() => setActive(icon)} role="tab" aria-selected={active === icon}>
                 {names[icon] || INITIAL_NAMES[icon]}
               </button>
             ))}
           </div>
 
           <div className="control-copy">
-            <h2>Recorte de {names[active] || INITIAL_NAMES[active]}</h2>
+            <h2 style={{ color: colors[active] }}>Recorte de {names[active] || INITIAL_NAMES[active]}</h2>
             <p>Arraste o quadrado ou ajuste os controles abaixo.</p>
           </div>
 
@@ -314,6 +322,18 @@ export default function App() {
               placeholder={INITIAL_NAMES[active]}
               onChange={(event) => setNames((current) => ({ ...current, [active]: event.target.value }))}
             />
+          </label>
+
+          <label className="color-label">Cor do nome e do quadrado
+            <span className="color-control">
+              <input
+                type="color"
+                value={colors[active]}
+                aria-label={`Cor de ${names[active] || INITIAL_NAMES[active]}`}
+                onChange={(event) => setColors((current) => ({ ...current, [active]: event.target.value }))}
+              />
+              <output>{colors[active].toUpperCase()}</output>
+            </span>
           </label>
 
           <label className="range-label">Horizontal <output>{activeCrop.x}px</output>

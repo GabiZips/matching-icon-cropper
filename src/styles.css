@@ -3,7 +3,8 @@
 body { margin: 0; min-width: 320px; background: radial-gradient(circle at 10% 0%, #ede6ff 0, transparent 28rem), var(--paper); color: var(--ink); font-family: Arial, Helvetica, sans-serif; }
 button, input { font: inherit; }
 main { max-width: 1240px; margin: 0 auto; padding: 52px 28px 64px; }
-.hero { max-width: 720px; margin-bottom: 34px; }
+.hero { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 24px; max-width: 860px; margin-bottom: 34px; }
+.app-logo { display: block; width: 96px; height: 96px; border-radius: 24px; box-shadow: 0 12px 30px #2b1a5b2b; }
 .eyebrow { margin: 0 0 12px; color: var(--purple); font-size: .78rem; font-weight: 800; letter-spacing: .17em; }
 h1 { margin: 0; font-family: Georgia, serif; font-size: clamp(2.5rem, 6vw, 4.8rem); letter-spacing: -.055em; line-height: .95; }
 .intro { max-width: 630px; margin: 18px 0 0; color: #5b5572; font-size: 1.08rem; line-height: 1.55; }
@@ -20,8 +21,6 @@ h1 { margin: 0; font-family: Georgia, serif; font-size: clamp(2.5rem, 6vw, 4.8re
 .crop-box { position: absolute; border: 3px solid var(--teal); cursor: grab; box-shadow: 0 0 0 9999px #17152d22; }
 .crop-box:active { cursor: grabbing; }
 .crop-box.selected { box-shadow: 0 0 0 3px white, 0 0 0 6px currentColor, 0 0 0 9999px #17152d22; }
-.crop-box.icon1 { color: var(--pink); border-color: var(--pink); }
-.crop-box.icon2 { color: var(--teal); border-color: var(--teal); }
 .crop-box span { position: absolute; top: -31px; left: -3px; padding: 5px 9px; border-radius: 7px 7px 7px 0; background: currentColor; color: white; font-size: .76rem; font-weight: 800; }
 .crop-box i { position: absolute; right: -10px; bottom: -10px; width: 21px; height: 21px; border: 3px solid white; border-radius: 50%; background: currentColor; cursor: nwse-resize; }
 .controls { padding: 24px; background: #fffcff; }
@@ -33,6 +32,10 @@ h1 { margin: 0; font-family: Georgia, serif; font-size: clamp(2.5rem, 6vw, 4.8re
 .name-label { display: grid; gap: 8px; margin-top: 22px; color: #504965; font-size: .88rem; font-weight: 800; }
 .name-label input { width: 100%; border: 1px solid #cfc5e5; border-radius: 10px; padding: 10px 11px; background: white; color: var(--ink); outline: none; }
 .name-label input:focus { border-color: var(--purple); box-shadow: 0 0 0 3px #6d4cc91a; }
+.color-label { display: grid; gap: 8px; margin-top: 18px; color: #504965; font-size: .88rem; font-weight: 800; }
+.color-control { display: flex; align-items: center; gap: 11px; }
+.color-control input { width: 52px; height: 38px; padding: 2px; border: 1px solid #cfc5e5; border-radius: 10px; background: white; cursor: pointer; }
+.color-control output { color: #706981; font-family: Consolas, monospace; font-size: .82rem; font-weight: 600; }
 .range-label { display: grid; gap: 8px; margin-top: 22px; color: #504965; font-size: .88rem; font-weight: 800; }
 .range-label output { color: #8a8398; font-weight: 500; }
 input[type="range"] { width: 100%; accent-color: var(--purple); }
@@ -43,4 +46,4 @@ input[type="range"] { width: 100%; accent-color: var(--purple); }
 button:disabled { cursor: not-allowed; opacity: .45; }
 .hint { margin: 20px 0 0; }
 .error-message { margin: 14px 0 0; color: #a7235e; font-size: .86rem; line-height: 1.45; }
-@media (max-width: 820px) { main { padding: 32px 16px 44px; } .workspace { grid-template-columns: 1fr; } .left-panel { border-right: 0; border-bottom: 1px solid var(--line); } .controls { padding: 20px; } .empty-state { min-height: 280px; } }
+@media (max-width: 820px) { main { padding: 32px 16px 44px; } .hero { grid-template-columns: 72px minmax(0, 1fr); gap: 16px; } .app-logo { width: 72px; height: 72px; border-radius: 18px; } .workspace { grid-template-columns: 1fr; } .left-panel { border-right: 0; border-bottom: 1px solid var(--line); } .controls { padding: 20px; } .empty-state { min-height: 280px; } }

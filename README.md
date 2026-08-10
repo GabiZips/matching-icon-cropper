@@ -6,6 +6,7 @@ Aplicativo desktop para Windows que cria dois matching icons a partir de uma ima
 
 - Dois recortes quadrados independentes
 - Nomes personalizados para cada ícone
+- Cor personalizada para o nome e o quadrado de cada ícone
 - Movimento e redimensionamento por arraste ou controles
 - Exportação em PNG
 - Preservação da animação de GIFs
@@ -13,7 +14,7 @@ Aplicativo desktop para Windows que cria dois matching icons a partir de uma ima
 
 ## Executável portátil
 
-Baixe `Matching Icon Cropper-0.1.0-portable.exe` na seção **Releases** do repositório. O aplicativo não precisa ser instalado.
+Baixe o arquivo `Matching Icon Cropper-*-portable.exe` na seção **Releases** do repositório. O aplicativo não precisa ser instalado.
 
 ## Desenvolvimento
 

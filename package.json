@@ -1,6 +1,6 @@
 {
   "name": "matching-icon-cropper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Aplicativo desktop para criar matching icons em PNG ou GIF animado.",
   "author": "GabiZips",
@@ -43,6 +43,7 @@
       "package.json"
     ],
     "win": {
+      "icon": "assets/app-icon.ico",
       "target": "portable"
     },
     "artifactName": "${productName}-${version}-portable.${ext}"
