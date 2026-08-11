@@ -4,9 +4,12 @@ Aplicativo desktop para Windows que cria dois matching icons a partir de uma ima
 
 ## Recursos
 
-- Dois recortes quadrados independentes
+- Duas áreas de recorte independentes
 - Nomes personalizados para cada ícone
-- Cor personalizada para o nome e o quadrado de cada ícone
+- Cor personalizada para o nome e a área de cada ícone
+- Imagem carregada pelo seletor ou arrastando o arquivo para o app
+- Proporção travada em `1:1`, `3:4`, `4:3`, `9:16` ou `16:9`
+- Modo livre para controlar largura e altura separadamente
 - Movimento e redimensionamento por arraste ou controles
 - Exportação em PNG
 - Preservação da animação de GIFs
