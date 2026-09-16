@@ -499,6 +499,52 @@ export default function App() {
           {message && <p className="error-message" role="alert">{message}</p>}
         </aside>
       </section>
+
+      <section className="preview-panel" aria-labelledby="preview-title">
+        <div className="preview-heading">
+          <div>
+            <p className="eyebrow">PREVIEW</p>
+            <h2 id="preview-title">Como os dois vão ficar juntos</h2>
+          </div>
+          <small>O preview acompanha os recortes em tempo real.</small>
+        </div>
+
+        <div className="preview-grid">
+          {ICON_IDS.map((icon) => {
+            const crop = crops[icon];
+            const previewRatio = crop.width / crop.height;
+            return (
+              <article className="preview-card" key={icon} style={{ color: colors[icon] }}>
+                <div
+                  className="preview-frame"
+                  style={{
+                    aspectRatio: `${crop.width} / ${crop.height}`,
+                    borderColor: colors[icon],
+                    width: `min(100%, ${Math.round(360 * Math.min(1, previewRatio))}px)`,
+                  }}
+                >
+                  {imageUrl ? (
+                    <img
+                      src={imageUrl}
+                      alt={`Preview de ${names[icon] || INITIAL_NAMES[icon]}`}
+                      style={{
+                        left: `${-(crop.x / crop.width) * 100}%`,
+                        top: `${-(crop.y / crop.height) * 100}%`,
+                        width: `${(dimensions.width / crop.width) * 100}%`,
+                        height: `${(dimensions.height / crop.height) * 100}%`,
+                      }}
+                    />
+                  ) : (
+                    <span>Selecione ou arraste uma arte</span>
+                  )}
+                </div>
+                <h3>{names[icon] || INITIAL_NAMES[icon]}</h3>
+                <p>{imageUrl ? `${crop.width} × ${crop.height}px` : "Aguardando imagem"}</p>
+              </article>
+            );
+          })}
+        </div>
+      </section>
     </main>
   );
 }

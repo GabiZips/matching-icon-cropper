@@ -10,6 +10,7 @@ Aplicativo desktop para Windows que cria dois matching icons a partir de uma ima
 - Imagem carregada pelo seletor ou arrastando o arquivo para o app
 - Proporção travada em `1:1`, `3:4`, `4:3`, `9:16` ou `16:9`
 - Modo livre para controlar largura e altura separadamente
+- Preview em tempo real dos dois recortes lado a lado
 - Movimento e redimensionamento por arraste ou controles
 - Exportação em PNG
 - Preservação da animação de GIFs
