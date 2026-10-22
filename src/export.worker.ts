@@ -77,6 +77,13 @@ self.onmessage = async ({ data }: MessageEvent<Job>) => {
       let previous: ParsedFrame | null = null;
       let restore: ImageData | null = null;
       for (let i = 0; i < frames.length; i++) {
+        const descriptor = frames[i].image.descriptor;
+        if (
+          !descriptor.width || !descriptor.height ||
+          descriptor.width * descriptor.height > 40_000_000 ||
+          descriptor.left + descriptor.width > full.width ||
+          descriptor.top + descriptor.height > full.height
+        ) throw new Error("O GIF contém um frame inválido ou grande demais.");
         const frame = decompressFrame(frames[i], parsed.gct, true);
         if (previous?.disposalType === 2) {
           const d = previous.dims;
