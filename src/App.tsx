@@ -1,550 +1,807 @@
-import { ChangeEvent, DragEvent as ReactDragEvent, PointerEvent, useEffect, useRef, useState } from "react";
-import { decompressFrames, parseGIF, type ParsedFrame } from "gifuct-js";
-import { GIFEncoder, applyPalette, quantize } from "gifenc";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent,
+} from "react";
 import appIcon from "../assets/app-icon.png";
+import {
+  ASPECTS,
+  ASPECT_LABELS,
+  ICON_IDS,
+  fitCrop,
+  outputSize,
+  safeFilename,
+  type Crop,
+  type Dimensions,
+  type IconId,
+} from "./crop";
 
-type Crop = { x: number; y: number; width: number; height: number };
-type IconId = "icon1" | "icon2";
+type Editor = {
+  crops: Record<IconId, Crop>;
+  names: Record<IconId, string>;
+  colors: Record<IconId, string>;
+  ratios: Record<IconId, number | null>;
+};
 type Drag = {
   icon: IconId;
   mode: "move" | "resize";
-  startX: number;
-  startY: number;
+  x: number;
+  y: number;
   crop: Crop;
-} | null;
-
-const ICON_IDS: IconId[] = ["icon1", "icon2"];
-const ASPECT_OPTIONS = [
-  { label: "1:1", value: 1 },
-  { label: "3:4", value: 3 / 4 },
-  { label: "4:3", value: 4 / 3 },
-  { label: "9:16", value: 9 / 16 },
-  { label: "16:9", value: 16 / 9 },
-];
-
-const INITIAL_CROPS: Record<IconId, Crop> = {
-  icon1: { x: 70, y: 70, width: 360, height: 360 },
-  icon2: { x: 390, y: 70, width: 360, height: 360 },
 };
-
-const INITIAL_NAMES: Record<IconId, string> = { icon1: "Ícone 1", icon2: "Ícone 2" };
-const INITIAL_COLORS: Record<IconId, string> = { icon1: "#e35da7", icon2: "#45c7ba" };
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
+type ExportFile = { name: string; bytes: Uint8Array };
+const DEFAULT_NAMES = { icon1: "Ícone 1", icon2: "Ícone 2" };
+const initialEditor: Editor = {
+  crops: {
+    icon1: { x: 0, y: 0, width: 360, height: 360 },
+    icon2: { x: 0, y: 0, width: 360, height: 360 },
+  },
+  names: DEFAULT_NAMES,
+  colors: { icon1: "#e35da7", icon2: "#45c7ba" },
+  ratios: { icon1: 1, icon2: 1 },
+};
+declare global {
+  interface Window {
+    desktop?: {
+      saveFiles(
+        files: ExportFile[],
+      ): Promise<{ canceled?: boolean; saved?: number; error?: string }>;
+    };
+  }
+}
+function textColor(hex: string) {
+  const rgb = [1, 3, 5]
+    .map((offset) => parseInt(hex.slice(offset, offset + 2), 16) / 255)
+    .map((n) => (n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4));
+  return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722 > 0.179
+    ? "#17152d"
+    : "#ffffff";
 }
 
 export default function App() {
-  const imageRef = useRef<HTMLImageElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [sourceFile, setSourceFile] = useState<File | null>(null);
-  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
-  const [crops, setCrops] = useState<Record<IconId, Crop>>(INITIAL_CROPS);
-  const [names, setNames] = useState<Record<IconId, string>>(INITIAL_NAMES);
-  const [colors, setColors] = useState<Record<IconId, string>>(INITIAL_COLORS);
-  const [aspectLocked, setAspectLocked] = useState<Record<IconId, boolean>>({ icon1: true, icon2: true });
-  const [aspectRatios, setAspectRatios] = useState<Record<IconId, number>>({ icon1: 1, icon2: 1 });
+  const [editor, setEditor] = useState<Editor>(initialEditor);
+  const editorRef = useRef(editor);
+  const past = useRef<Editor[]>([]);
+  const future = useRef<Editor[]>([]);
+  const [, refreshHistory] = useState(0);
+  const [source, setSource] = useState<{ file: File; url: string } | null>(
+    null,
+  );
+  const loadRequest = useRef(0);
+  const [loading, setLoading] = useState(false);
+  const [dimensions, setDimensions] = useState<Dimensions>({
+    width: 0,
+    height: 0,
+  });
   const [active, setActive] = useState<IconId>("icon1");
-  const [drag, setDrag] = useState<Drag>(null);
-  const [exporting, setExporting] = useState<IconId | "both" | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [zoom, setZoom] = useState(100);
+  const [previewShape, setPreviewShape] = useState<"rectangle" | "circle">(
+    "rectangle",
+  );
+  const [longestSide, setLongestSide] = useState(0);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
-  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [error, setError] = useState("");
+  const stageRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<Drag | null>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const busy = loading || saving || progress !== null;
+  useEffect(
+    () => () => {
+      if (source) URL.revokeObjectURL(source.url);
+    },
+    [source],
+  );
+  useEffect(() => () => workerRef.current?.terminate(), []);
 
-  useEffect(() => {
-    return () => {
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-    };
-  }, [imageUrl]);
-
-  const keepInBounds = (crop: Crop, ratio?: number): Crop => {
-    if (!dimensions.width || !dimensions.height) {
-      return {
-        x: Math.round(crop.x),
-        y: Math.round(crop.y),
-        width: Math.round(crop.width),
-        height: Math.round(crop.height),
-      };
-    }
-    const minimumSide = Math.min(80, dimensions.width, dimensions.height);
-    let width = Math.max(1, crop.width);
-    let height = Math.max(1, crop.height);
-
-    if (ratio) {
-      height = width / ratio;
-      const scaleUp = Math.max(1, minimumSide / width, minimumSide / height);
-      width *= scaleUp;
-      height *= scaleUp;
-      const scaleDown = Math.min(1, dimensions.width / width, dimensions.height / height);
-      width *= scaleDown;
-      height *= scaleDown;
-    } else {
-      width = clamp(width, minimumSide, dimensions.width);
-      height = clamp(height, minimumSide, dimensions.height);
-    }
-
-    width = Math.round(width);
-    height = Math.round(height);
-    return {
-      width,
-      height,
-      x: clamp(Math.round(crop.x), 0, dimensions.width - width),
-      y: clamp(Math.round(crop.y), 0, dimensions.height - height),
-    };
-  };
-
-  const resetCrops = (width: number, height: number) => {
-    const makeCrop = (ratio: number, alignRight: boolean): Crop => {
-      const cropWidth = Math.floor(Math.min(width * 0.58, height * 0.58 * ratio));
-      const cropHeight = Math.floor(cropWidth / ratio);
-      const margin = Math.floor(width * 0.08);
-      return {
-        x: alignRight ? Math.max(0, width - cropWidth - margin) : Math.min(margin, width - cropWidth),
-        y: Math.floor((height - cropHeight) / 2),
-        width: cropWidth,
-        height: cropHeight,
-      };
-    };
-    setCrops({
-      icon1: makeCrop(aspectRatios.icon1, false),
-      icon2: makeCrop(aspectRatios.icon2, true),
-    });
-  };
-
-  const loadFile = (file: File) => {
-    const supportedExtension = /\.(jpe?g|png|webp|gif)$/i.test(file.name);
-    if (!file.type.startsWith("image/") && !supportedExtension) {
-      setMessage("Solte um arquivo de imagem: JPG, PNG, WebP ou GIF.");
+  function remember() {
+    past.current = [...past.current.slice(-99), editorRef.current];
+    future.current = [];
+    refreshHistory((n) => n + 1);
+  }
+  function change(next: Editor, saveHistory = true) {
+    if (JSON.stringify(next) === JSON.stringify(editorRef.current)) return;
+    if (saveHistory) remember();
+    editorRef.current = next;
+    setEditor(next);
+  }
+  function undo() {
+    const previous = past.current.pop();
+    if (!previous) return;
+    future.current.push(editorRef.current);
+    change(previous, false);
+    refreshHistory((n) => n + 1);
+  }
+  function redo() {
+    const next = future.current.pop();
+    if (!next) return;
+    past.current.push(editorRef.current);
+    change(next, false);
+    refreshHistory((n) => n + 1);
+  }
+  async function loadFile(file: File) {
+    if (busy) return;
+    setError("");
+    setMessage("");
+    if (
+      !/^image\/(png|jpeg|webp|gif)$/i.test(file.type) &&
+      !/\.(png|jpe?g|webp|gif)$/i.test(file.name)
+    ) {
+      setError("Escolha uma imagem PNG, JPG, WebP ou GIF.");
       return;
     }
-    if (imageUrl) URL.revokeObjectURL(imageUrl);
-    setSourceFile(file);
-    setImageUrl(URL.createObjectURL(file));
-    setDimensions({ width: 0, height: 0 });
-    setMessage("");
-  };
-
-  const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) loadFile(file);
-    event.target.value = "";
-  };
-
-  const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
-    event.preventDefault();
-    setIsDraggingFile(false);
-    const file = event.dataTransfer.files?.[0];
-    if (file) loadFile(file);
-  };
-
-  const startDrag = (event: PointerEvent<HTMLElement>, icon: IconId, mode: "move" | "resize") => {
+    if (file.size > 100 * 1024 * 1024) {
+      setError("Use uma imagem de até 100 MB.");
+      return;
+    }
+    const request = ++loadRequest.current;
+    const url = URL.createObjectURL(file);
+    setLoading(true);
+    try {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      if (request !== loadRequest.current) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const bounds = { width: image.naturalWidth, height: image.naturalHeight };
+      if (
+        !bounds.width ||
+        !bounds.height ||
+        bounds.width * bounds.height > 40_000_000
+      )
+        throw new Error("Use uma imagem de até 40 megapixels.");
+      const current = editorRef.current;
+      const makeCrop = (icon: IconId, right: boolean) => {
+        const ratio = current.ratios[icon] || 1;
+        const width = Math.max(
+          1,
+          Math.round(
+            Math.min(bounds.width * 0.58, bounds.height * 0.58 * ratio),
+          ),
+        );
+        const crop = fitCrop(
+          { x: 0, y: 0, width, height: width / ratio },
+          bounds,
+          ratio,
+        );
+        return fitCrop(
+          {
+            ...crop,
+            x: Math.round(
+              right
+                ? bounds.width - crop.width - bounds.width * 0.08
+                : bounds.width * 0.08,
+            ),
+            y: Math.round((bounds.height - crop.height) / 2),
+          },
+          bounds,
+        );
+      };
+      change(
+        {
+          ...current,
+          crops: {
+            icon1: makeCrop("icon1", false),
+            icon2: makeCrop("icon2", true),
+          },
+        },
+        false,
+      );
+      past.current = [];
+      future.current = [];
+      refreshHistory((n) => n + 1);
+      setDimensions(bounds);
+      setSource({ file, url });
+      setZoom(100);
+    } catch (reason) {
+      URL.revokeObjectURL(url);
+      setError(
+        reason instanceof Error && reason.message.includes("megapixels")
+          ? reason.message
+          : "Não foi possível abrir essa imagem. O arquivo pode estar corrompido.",
+      );
+    } finally {
+      if (request === loadRequest.current) setLoading(false);
+    }
+  }
+  function updateCrop(field: keyof Crop, value: number) {
+    const current = editorRef.current;
+    const ratio = current.ratios[active];
+    const crop = { ...current.crops[active], [field]: value };
+    if (ratio && field === "height") crop.width = value * ratio;
+    change({
+      ...current,
+      crops: {
+        ...current.crops,
+        [active]: fitCrop(crop, dimensions, ratio || undefined),
+      },
+    });
+  }
+  function startDrag(
+    event: PointerEvent<HTMLElement>,
+    icon: IconId,
+    mode: Drag["mode"],
+  ) {
+    if (busy) return;
     event.preventDefault();
     event.stopPropagation();
-    setActive(icon);
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDrag({ icon, mode, startX: event.clientX, startY: event.clientY, crop: crops[icon] });
-  };
-
-  const moveDrag = (event: PointerEvent<HTMLDivElement>) => {
-    if (!drag || !stageRef.current || !dimensions.width) return;
+    setActive(icon);
+    remember();
+    dragRef.current = {
+      icon,
+      mode,
+      x: event.clientX,
+      y: event.clientY,
+      crop: editorRef.current.crops[icon],
+    };
+  }
+  function moveDrag(event: PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag || !stageRef.current) return;
     const rect = stageRef.current.getBoundingClientRect();
-    const dx = ((event.clientX - drag.startX) / rect.width) * dimensions.width;
-    const dy = ((event.clientY - drag.startY) / rect.height) * dimensions.height;
-    let next: Crop;
+    const dx = ((event.clientX - drag.x) * dimensions.width) / rect.width;
+    const dy = ((event.clientY - drag.y) * dimensions.height) / rect.height;
+    const current = editorRef.current;
+    const ratio = current.ratios[drag.icon];
+    let crop = { ...drag.crop };
     if (drag.mode === "move") {
-      next = { ...drag.crop, x: drag.crop.x + dx, y: drag.crop.y + dy };
-    } else if (aspectLocked[drag.icon]) {
-      const ratio = aspectRatios[drag.icon];
-      const width = Math.abs(dx) >= Math.abs(dy * ratio)
-        ? drag.crop.width + dx
-        : (drag.crop.height + dy) * ratio;
-      next = { ...drag.crop, width, height: width / ratio };
-    } else {
-      next = { ...drag.crop, width: drag.crop.width + dx, height: drag.crop.height + dy };
+      crop.x += dx;
+      crop.y += dy;
+    } else if (ratio)
+      crop.width += Math.abs(dx) >= Math.abs(dy * ratio) ? dx : dy * ratio;
+    else {
+      crop.width += dx;
+      crop.height += dy;
     }
-    setCrops((current) => ({
+    crop = fitCrop(crop, dimensions, ratio || undefined);
+    change(
+      { ...current, crops: { ...current.crops, [drag.icon]: crop } },
+      false,
+    );
+  }
+  function setRatio(value: string) {
+    if (value === "custom") return;
+    const current = editorRef.current;
+    const ratio = value === "free" ? null : Number(value);
+    const crop = current.crops[active];
+    const width = ratio
+      ? Math.sqrt(crop.width * crop.height * ratio)
+      : crop.width;
+    change({
       ...current,
-      [drag.icon]: keepInBounds(next, aspectLocked[drag.icon] ? aspectRatios[drag.icon] : undefined),
-    }));
-  };
-
-  const updateActiveCrop = (field: keyof Crop, value: number) => {
-    setCrops((current) => {
-      const next = { ...current[active], [field]: value };
-      if (aspectLocked[active] && field === "width") next.height = value / aspectRatios[active];
-      if (aspectLocked[active] && field === "height") next.width = value * aspectRatios[active];
-      return {
-        ...current,
-        [active]: keepInBounds(next, aspectLocked[active] ? aspectRatios[active] : undefined),
-      };
+      ratios: { ...current.ratios, [active]: ratio },
+      crops: {
+        ...current.crops,
+        [active]: fitCrop({ ...crop, width }, dimensions, ratio || undefined),
+      },
     });
-  };
-
-  const toggleAspectLock = () => {
-    if (aspectLocked[active]) {
-      setAspectLocked((current) => ({ ...current, [active]: false }));
-      return;
-    }
-    const currentRatio = crops[active].width / crops[active].height;
-    setAspectRatios((current) => ({ ...current, [active]: currentRatio }));
-    setAspectLocked((current) => ({ ...current, [active]: true }));
-  };
-
-  const applyAspectRatio = (ratio: number) => {
-    setAspectRatios((current) => ({ ...current, [active]: ratio }));
-    setAspectLocked((current) => ({ ...current, [active]: true }));
-    setCrops((current) => {
-      const crop = current[active];
-      const area = crop.width * crop.height;
-      const width = Math.sqrt(area * ratio);
-      const next = keepInBounds({ ...crop, width, height: width / ratio }, ratio);
-      return { ...current, [active]: next };
-    });
-  };
-
-  const saveBlob = (blob: Blob, filename: string) => {
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const filenameFor = (icon: IconId, extension: "png" | "gif") => {
-    const safeName = names[icon]
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
-    return `${safeName || icon}-matching-icon.${extension}`;
-  };
-
-  const downloadPng = async (icon: IconId) => {
-    const image = imageRef.current;
-    if (!image) return;
-    const crop = crops[icon];
-    const canvas = document.createElement("canvas");
-    canvas.width = crop.width;
-    canvas.height = crop.height;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    context.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (!blob) return;
-    saveBlob(blob, filenameFor(icon, "png"));
-  };
-
-  const writeGifFrame = (encoder: ReturnType<typeof GIFEncoder>, canvas: HTMLCanvasElement, frame: ParsedFrame, frameNumber: number) => {
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    const palette = quantize(pixels, 256, { format: "rgba4444", oneBitAlpha: true });
-    const indexed = applyPalette(pixels, palette, "rgba4444");
-    const transparentIndex = palette.findIndex((color: number[]) => color[3] === 0);
-    encoder.writeFrame(indexed, canvas.width, canvas.height, {
-      palette,
-      delay: Math.max(frame.delay, 20),
-      dispose: 1,
-      repeat: frameNumber === 0 ? 0 : undefined,
-      transparent: transparentIndex >= 0,
-      transparentIndex: Math.max(transparentIndex, 0),
-    });
-  };
-
-  const downloadGif = async (icon: IconId) => {
-    if (!sourceFile) return;
-    const crop = crops[icon];
-    const parsed = parseGIF(await sourceFile.arrayBuffer());
-    const frames = decompressFrames(parsed, true);
-    if (!frames.length) throw new Error("O GIF não possui frames para exportar.");
-
-    const fullCanvas = document.createElement("canvas");
-    fullCanvas.width = parsed.lsd.width;
-    fullCanvas.height = parsed.lsd.height;
-    const fullContext = fullCanvas.getContext("2d", { willReadFrequently: true });
-    if (!fullContext) throw new Error("Não foi possível ler os frames do GIF.");
-
-    const cropCanvas = document.createElement("canvas");
-    cropCanvas.width = crop.width;
-    cropCanvas.height = crop.height;
-    const cropContext = cropCanvas.getContext("2d", { willReadFrequently: true });
-    if (!cropContext) throw new Error("Não foi possível criar o recorte animado.");
-
-    const encoder = GIFEncoder();
-    let previous: ParsedFrame | null = null;
-    let restoreFrame: ImageData | null = null;
-
-    frames.forEach((frame, frameNumber) => {
-      if (previous?.disposalType === 2) {
-        fullContext.clearRect(previous.dims.left, previous.dims.top, previous.dims.width, previous.dims.height);
-      } else if (previous?.disposalType === 3 && restoreFrame) {
-        fullContext.putImageData(restoreFrame, 0, 0);
-      }
-
-      restoreFrame = frame.disposalType === 3
-        ? fullContext.getImageData(0, 0, fullCanvas.width, fullCanvas.height)
-        : null;
-      const framePixels = new Uint8ClampedArray(frame.patch);
-      fullContext.putImageData(new ImageData(framePixels, frame.dims.width, frame.dims.height), frame.dims.left, frame.dims.top);
-      cropContext.clearRect(0, 0, crop.width, crop.height);
-      cropContext.drawImage(fullCanvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
-      writeGifFrame(encoder, cropCanvas, frame, frameNumber);
-      previous = frame;
-    });
-
-    encoder.finish();
-    saveBlob(new Blob([new Uint8Array(encoder.bytes())], { type: "image/gif" }), filenameFor(icon, "gif"));
-  };
-
-  const download = async (icon: IconId) => {
-    const isGif = sourceFile?.type === "image/gif" || sourceFile?.name.toLowerCase().endsWith(".gif");
-    setExporting(icon);
+  }
+  async function exportIcons(ids: IconId[]) {
+    if (!source || busy) return;
+    setError("");
     setMessage("");
-    try {
-      if (isGif) await downloadGif(icon);
-      else await downloadPng(icon);
-    } catch {
-      setMessage("Não foi possível exportar esse GIF. Tente um arquivo menor ou outro GIF.");
-    } finally {
-      setExporting(null);
-    }
-  };
-
-  const downloadBoth = async () => {
-    setExporting("both");
-    setMessage("");
-    try {
-      const isGif = sourceFile?.type === "image/gif" || sourceFile?.name.toLowerCase().endsWith(".gif");
-      if (isGif) {
-        await downloadGif("icon1");
-        await downloadGif("icon2");
-      } else {
-        await downloadPng("icon1");
-        await downloadPng("icon2");
+    setProgress(0);
+    const worker = new Worker(new URL("./export.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    workerRef.current = worker;
+    const finish = () => {
+      worker.terminate();
+      workerRef.current = null;
+      setProgress(null);
+    };
+    worker.onerror = () => {
+      finish();
+      setError("Não foi possível processar a imagem. Tente um arquivo menor.");
+    };
+    worker.onmessage = async ({ data }) => {
+      if (typeof data.progress === "number") setProgress(data.progress);
+      if (data.error) {
+        finish();
+        setError(data.error);
       }
-    } catch {
-      setMessage("Não foi possível exportar esse GIF. Tente um arquivo menor ou outro GIF.");
-    } finally {
-      setExporting(null);
-    }
-  };
-
-  const activeCrop = crops[active];
-  const minimumCropSize = Math.min(80, dimensions.width, dimensions.height) || 1;
-  const displayedRatio = aspectLocked[active]
-    ? aspectRatios[active]
-    : activeCrop.width / activeCrop.height;
-  const selectedAspect = ASPECT_OPTIONS.find((option) => Math.abs(option.value - displayedRatio) < 0.001);
-  const isGif = sourceFile?.type === "image/gif" || sourceFile?.name.toLowerCase().endsWith(".gif");
-
+      if (data.files) {
+        finish();
+        setSaving(true);
+        try {
+          const files = data.files as ExportFile[];
+          if (window.desktop) {
+            const result = await window.desktop.saveFiles(files);
+            if (result.error) throw new Error(result.error);
+            setMessage(
+              result.canceled
+                ? "Salvamento cancelado."
+                : `${result.saved} arquivo(s) salvo(s).`,
+            );
+          } else {
+            for (const file of files) {
+              const url = URL.createObjectURL(
+                new Blob([new Uint8Array(file.bytes)], {
+                  type: file.name.endsWith(".gif") ? "image/gif" : "image/png",
+                }),
+              );
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = file.name;
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(url), 10000);
+            }
+            setMessage("Recortes exportados.");
+          }
+        } catch (reason) {
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível salvar os arquivos.",
+          );
+        } finally {
+          setSaving(false);
+        }
+      }
+    };
+    worker.postMessage({
+      file: source.file,
+      longestSide,
+      crops: ids.map((id, i) => ({
+        crop: editor.crops[id],
+        name: `${safeFilename(editor.names[id], id)}-${i + 1}-matching-icon`,
+      })),
+    });
+  }
+  const crop = editor.crops[active];
+  const ratio = editor.ratios[active];
+  const displayName = (id: IconId) =>
+    editor.names[id].trim() || DEFAULT_NAMES[id];
+  const upscaling = ICON_IDS.some(
+    (id) =>
+      longestSide > Math.max(editor.crops[id].width, editor.crops[id].height),
+  );
   return (
     <main
-      className={isDraggingFile ? "dragging-file" : ""}
-      onDragEnter={(event) => {
-        if (event.dataTransfer.types.includes("Files")) setIsDraggingFile(true);
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (e.dataTransfer.types.includes("Files") && !busy) {
+          e.dataTransfer.dropEffect = "copy";
+          setDragOver(true);
+        }
       }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
-        setIsDraggingFile(true);
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+          setDragOver(false);
       }}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDraggingFile(false);
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        if (e.dataTransfer.files[0]) void loadFile(e.dataTransfer.files[0]);
       }}
-      onDrop={handleDrop}
+      onKeyDown={(e) => {
+        if (
+          busy ||
+          (e.target as HTMLElement).closest(
+            "input, select, textarea, [contenteditable=true]",
+          )
+        )
+          return;
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+          e.preventDefault();
+          if (e.shiftKey) redo();
+          else undo();
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+          e.preventDefault();
+          redo();
+          return;
+        }
+        if (
+          !source ||
+          !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)
+        )
+          return;
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight")
+          updateCrop("x", crop.x + (e.key === "ArrowLeft" ? -step : step));
+        else updateCrop("y", crop.y + (e.key === "ArrowUp" ? -step : step));
+      }}
     >
-      {isDraggingFile && <div className="drop-overlay"><strong>Solte a arte aqui</strong><span>JPG, PNG, WebP ou GIF</span></div>}
-      <section className="hero">
+      {dragOver && (
+        <div className="drop-overlay">
+          <strong>Solte a arte aqui</strong>
+          <span>PNG, JPG, WebP ou GIF</span>
+        </div>
+      )}
+      <header className="hero">
         <img className="app-logo" src={appIcon} alt="" />
         <div>
-          <p className="eyebrow">MATCHING ICONS</p>
-          <h1>Corte seus matching icons do seu jeito.</h1>
-          <p className="intro">Envie uma imagem de qualquer dupla, ajuste as duas áreas e baixe cada recorte no formato escolhido. GIFs continuam animados.</p>
+          <p className="eyebrow">MATCHING ICON CROPPER</p>
+          <h1>Dois recortes. Uma conexão.</h1>
+          <p className="intro">
+            Ajuste sua dupla e veja o resultado enquanto edita. Suas imagens
+            ficam no computador.
+          </p>
         </div>
-      </section>
-
-      <section className="workspace" aria-label="Editor de recortes">
-        <div className="left-panel">
-          <label className="upload" htmlFor="image-upload">
-            <span>Escolher imagem</span>
-            <small>ou arraste a arte para a janela</small>
+      </header>
+      <div className="editor-layout">
+        <section className="editor-panel" aria-label="Editor de recortes">
+          <label
+            className={`upload ${busy ? "disabled" : ""}`}
+            htmlFor="image-upload"
+          >
+            <strong>{loading ? "Abrindo imagem…" : "Escolher imagem"}</strong>
+            <small>ou arraste uma arte para o app</small>
           </label>
-          <input id="image-upload" type="file" accept="image/*" onChange={handleFile} />
-
-          {!imageUrl ? (
-            <div className="empty-state">Clique em “Escolher imagem” ou arraste a arte para dentro do app.</div>
-          ) : (
-            <div
-              className="image-stage"
-              ref={stageRef}
-              onPointerMove={moveDrag}
-              onPointerUp={() => setDrag(null)}
-              onPointerCancel={() => setDrag(null)}
+          <input
+            id="image-upload"
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            disabled={busy}
+            onChange={(e) => {
+              if (e.target.files?.[0]) void loadFile(e.target.files[0]);
+              e.target.value = "";
+            }}
+          />
+          <div className="toolbar" aria-label="Ferramentas de edição">
+            <button
+              disabled={!source || busy || !past.current.length}
+              onClick={undo}
+              title="Ctrl+Z"
             >
-              <img
-                ref={imageRef}
-                src={imageUrl}
-                alt="Imagem escolhida para recorte"
-                onLoad={(event) => {
-                  const { naturalWidth: width, naturalHeight: height } = event.currentTarget;
-                  setDimensions({ width, height });
-                  resetCrops(width, height);
+              Desfazer
+            </button>
+            <button
+              disabled={!source || busy || !future.current.length}
+              onClick={redo}
+              title="Ctrl+Shift+Z"
+            >
+              Refazer
+            </button>
+            <label>
+              Zoom{" "}
+              <select
+                aria-label="Zoom da arte"
+                disabled={!source}
+                value={zoom}
+                onChange={(e) => setZoom(Number(e.target.value))}
+              >
+                {[50, 75, 100, 150, 200, 300].map((n) => (
+                  <option key={n} value={n}>
+                    {n === 100 ? "Ajustar" : `${n}%`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {!source ? (
+            <div className="empty-state">
+              Sua arte aparece aqui.
+              <br />
+              PNG, JPG, WebP e GIF animado.
+            </div>
+          ) : (
+            <>
+              <div className="stage-scroll">
+                <div
+                  className="image-stage"
+                  ref={stageRef}
+                  style={{ width: `${zoom}%` }}
+                  onPointerMove={moveDrag}
+                  onPointerUp={() => {
+                    dragRef.current = null;
+                  }}
+                  onPointerCancel={() => {
+                    dragRef.current = null;
+                  }}
+                >
+                  <img src={source.url} alt="Arte original" draggable={false} />
+                  {ICON_IDS.map((id) => {
+                    const c = editor.crops[id];
+                    return (
+                      <div
+                        key={id}
+                        className={`crop-box ${active === id ? "selected" : ""}`}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Mover recorte de ${displayName(id)}`}
+                        onFocus={() => setActive(id)}
+                        onPointerDown={(e) => startDrag(e, id, "move")}
+                        style={
+                          {
+                            "--crop-color": editor.colors[id],
+                            "--label-ink": textColor(editor.colors[id]),
+                            left: `${(c.x / dimensions.width) * 100}%`,
+                            top: `${(c.y / dimensions.height) * 100}%`,
+                            width: `${(c.width / dimensions.width) * 100}%`,
+                            height: `${(c.height / dimensions.height) * 100}%`,
+                          } as CSSProperties
+                        }
+                      >
+                        <span>{displayName(id)}</span>
+                        <i
+                          aria-label={`Redimensionar ${displayName(id)}`}
+                          onPointerDown={(e) => startDrag(e, id, "resize")}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <p className="hint">
+                Selecione uma área e use as setas para mover 1 px. Shift + seta
+                move 10 px. No zoom, role para ver o restante da arte.
+              </p>
+            </>
+          )}
+          <fieldset disabled={!source || busy} className="crop-settings">
+            <legend>Ajustar seleção</legend>
+            <div className="tabs" aria-label="Recorte selecionado">
+              {ICON_IDS.map((id) => (
+                <button
+                  key={id}
+                  aria-pressed={active === id}
+                  style={{ borderColor: editor.colors[id] }}
+                  onClick={() => setActive(id)}
+                >
+                  {displayName(id)}
+                </button>
+              ))}
+            </div>
+            <div className="settings-grid">
+              <label>
+                Nome
+                <input
+                  maxLength={40}
+                  value={editor.names[active]}
+                  onChange={(e) =>
+                    change({
+                      ...editor,
+                      names: { ...editor.names, [active]: e.target.value },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Cor
+                <input
+                  aria-label="Cor da seleção"
+                  type="color"
+                  value={editor.colors[active]}
+                  onChange={(e) =>
+                    change({
+                      ...editor,
+                      colors: { ...editor.colors, [active]: e.target.value },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Proporção
+                <select
+                  aria-label="Proporção"
+                  value={
+                    ratio === null
+                      ? "free"
+                      : ASPECTS.includes(ratio)
+                        ? String(ratio)
+                        : "custom"
+                  }
+                  onChange={(e) => setRatio(e.target.value)}
+                >
+                  <option value="free">Livre</option>
+                  {ratio !== null && !ASPECTS.includes(ratio) && (
+                    <option value="custom">Atual travada</option>
+                  )}
+                  {ASPECTS.map((n, i) => (
+                    <option key={n} value={n}>
+                      {ASPECT_LABELS[i]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="lock-button"
+                onClick={() => {
+                  const current = editorRef.current;
+                  change({
+                    ...current,
+                    ratios: {
+                      ...current.ratios,
+                      [active]:
+                        ratio === null ? crop.width / crop.height : null,
+                    },
+                  });
                 }}
-              />
-              {dimensions.width > 0 && ICON_IDS.map((icon) => {
-                const crop = crops[icon];
-                const selected = icon === active;
-                return (
-                  <div
-                    key={icon}
-                    className={`crop-box ${icon} ${selected ? "selected" : ""}`}
-                    style={{
-                      color: colors[icon],
-                      borderColor: colors[icon],
-                      left: `${(crop.x / dimensions.width) * 100}%`,
-                      top: `${(crop.y / dimensions.height) * 100}%`,
-                      width: `${(crop.width / dimensions.width) * 100}%`,
-                      height: `${(crop.height / dimensions.height) * 100}%`,
+              >
+                {ratio === null ? "Travar atual" : "Destravar"}
+              </button>
+              {(["x", "y", "width", "height"] as const).map((field) => (
+                <label key={field}>
+                  {
+                    {
+                      x: "Horizontal",
+                      y: "Vertical",
+                      width: "Largura",
+                      height: "Altura",
+                    }[field]
+                  }
+                  <input
+                    aria-label={field}
+                    type="number"
+                    min={field === "x" || field === "y" ? 0 : 1}
+                    max={
+                      field === "x"
+                        ? dimensions.width - crop.width
+                        : field === "y"
+                          ? dimensions.height - crop.height
+                          : field === "width"
+                            ? dimensions.width
+                            : dimensions.height
+                    }
+                    value={crop[field]}
+                    onChange={(e) => {
+                      if (e.target.value !== "")
+                        updateCrop(field, Number(e.target.value));
                     }}
-                    onPointerDown={(event) => startDrag(event, icon, "move")}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Mover recorte de ${names[icon] || INITIAL_NAMES[icon]}`}
-                  >
-                    <span>{names[icon] || INITIAL_NAMES[icon]}</span>
-                    <i aria-label={`Redimensionar recorte de ${names[icon] || INITIAL_NAMES[icon]}`} onPointerDown={(event) => startDrag(event, icon, "resize")} />
-                  </div>
+                  />
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        </section>
+        <aside className="result-panel" aria-label="Preview e exportação">
+          <section className="preview-panel" aria-labelledby="preview-title">
+            <p className="eyebrow">PREVIEW AO VIVO</p>
+            <h2 id="preview-title">Sua dupla, lado a lado</h2>
+            <div className="shape-controls" aria-label="Formato do preview">
+              <button
+                aria-pressed={previewShape === "rectangle"}
+                onClick={() => setPreviewShape("rectangle")}
+              >
+                Recorte completo
+              </button>
+              <button
+                aria-pressed={previewShape === "circle"}
+                onClick={() => setPreviewShape("circle")}
+              >
+                Perfil redondo
+              </button>
+            </div>
+            <div className="preview-grid">
+              {ICON_IDS.map((id) => {
+                const c = editor.crops[id];
+                const side = Math.min(c.width, c.height);
+                const view =
+                  previewShape === "circle"
+                    ? {
+                        x: c.x + (c.width - side) / 2,
+                        y: c.y + (c.height - side) / 2,
+                        width: side,
+                        height: side,
+                      }
+                    : c;
+                const output = outputSize(c, longestSide);
+                return (
+                  <article className="preview-card" key={id}>
+                    <div
+                      className={`preview-frame ${previewShape}`}
+                      style={{
+                        aspectRatio: `${view.width}/${view.height}`,
+                        outlineColor: editor.colors[id],
+                      }}
+                    >
+                      {source ? (
+                        <img
+                          src={source.url}
+                          draggable={false}
+                          alt={`Preview de ${displayName(id)}`}
+                          style={{
+                            left: `${(-view.x / view.width) * 100}%`,
+                            top: `${(-view.y / view.height) * 100}%`,
+                            width: `${(dimensions.width / view.width) * 100}%`,
+                            height: `${(dimensions.height / view.height) * 100}%`,
+                          }}
+                        />
+                      ) : (
+                        <span>Escolha uma arte</span>
+                      )}
+                    </div>
+                    <h3>{displayName(id)}</h3>
+                    <p>
+                      {source
+                        ? `${output.width} × ${output.height} px`
+                        : "Aguardando imagem"}
+                    </p>
+                  </article>
                 );
               })}
             </div>
-          )}
-        </div>
-
-        <aside className="controls">
-          <div className="tabs" role="tablist" aria-label="Ícone selecionado">
-            {ICON_IDS.map((icon) => (
-              <button key={icon} style={{ color: colors[icon] }} className={active === icon ? "active" : ""} onClick={() => setActive(icon)} role="tab" aria-selected={active === icon}>
-                {names[icon] || INITIAL_NAMES[icon]}
+            <p className="hint">
+              {previewShape === "circle"
+                ? "Simula o centro da imagem em um perfil redondo. O arquivo salvo mantém o recorte completo."
+                : "O preview mostra a mesma área que será salva. Selecione 1:1 para um ícone quadrado."}
+            </p>
+          </section>
+          <section className="export-panel">
+            <h2>Salvar recortes</h2>
+            <label>
+              Tamanho de saída
+              <select
+                aria-label="Tamanho de saída"
+                disabled={busy}
+                value={longestSide}
+                onChange={(e) => setLongestSide(Number(e.target.value))}
+              >
+                <option value={0}>Original</option>
+                {[256, 512, 1024, 2048].map((n) => (
+                  <option key={n} value={n}>
+                    {n} px
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="hint">
+              Tamanho do lado maior. A proporção é preservada.
+              {upscaling && source
+                ? " A imagem será ampliada e pode perder nitidez."
+                : ""}
+            </p>
+            <div className="downloads">
+              <button
+                className="primary"
+                disabled={!source || busy}
+                onClick={() => void exportIcons(ICON_IDS)}
+              >
+                Salvar a dupla em uma pasta
               </button>
-            ))}
-          </div>
-
-          <div className="control-copy">
-            <h2 style={{ color: colors[active] }}>Recorte de {names[active] || INITIAL_NAMES[active]}</h2>
-            <p>Arraste a área ou ajuste os controles abaixo.</p>
-          </div>
-
-          <label className="name-label">Nome do ícone
-            <input
-              type="text"
-              maxLength={40}
-              value={names[active]}
-              placeholder={INITIAL_NAMES[active]}
-              onChange={(event) => setNames((current) => ({ ...current, [active]: event.target.value }))}
-            />
-          </label>
-
-          <label className="color-label">Cor do nome e do quadrado
-            <span className="color-control">
-              <input
-                type="color"
-                value={colors[active]}
-                aria-label={`Cor de ${names[active] || INITIAL_NAMES[active]}`}
-                onChange={(event) => setColors((current) => ({ ...current, [active]: event.target.value }))}
-              />
-              <output>{colors[active].toUpperCase()}</output>
-            </span>
-          </label>
-
-          <div className="aspect-control">
-            <div className="aspect-heading">
-              <span>Proporção da área</span>
-              <button type="button" className={aspectLocked[active] ? "locked" : ""} onClick={toggleAspectLock}>
-                {aspectLocked[active] ? "Destravar" : "Travar atual"}
+              <button
+                disabled={!source || busy}
+                onClick={() => void exportIcons([active])}
+              >
+                Salvar {displayName(active)}
               </button>
             </div>
-            <select
-              aria-label="Proporção da área de recorte"
-              value={selectedAspect?.value.toString() ?? "custom"}
-              onChange={(event) => {
-                if (event.target.value !== "custom") applyAspectRatio(Number(event.target.value));
-              }}
-            >
-              {!selectedAspect && <option value="custom">Atual ({displayedRatio.toFixed(2)}:1)</option>}
-              {ASPECT_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
-            </select>
-            <small>{aspectLocked[active] ? "A largura e a altura mudam juntas." : "Modo livre: ajuste largura e altura separadamente."}</small>
-          </div>
-
-          <label className="range-label">Horizontal <output>{activeCrop.x}px</output>
-            <input type="range" min="0" max={Math.max(0, dimensions.width - activeCrop.width)} value={activeCrop.x} disabled={!imageUrl} onChange={(event) => updateActiveCrop("x", Number(event.target.value))} />
-          </label>
-          <label className="range-label">Vertical <output>{activeCrop.y}px</output>
-            <input type="range" min="0" max={Math.max(0, dimensions.height - activeCrop.height)} value={activeCrop.y} disabled={!imageUrl} onChange={(event) => updateActiveCrop("y", Number(event.target.value))} />
-          </label>
-          <label className="range-label">Largura <output>{activeCrop.width}px</output>
-            <input type="range" min={minimumCropSize} max={dimensions.width || minimumCropSize} value={activeCrop.width} disabled={!imageUrl} onChange={(event) => updateActiveCrop("width", Number(event.target.value))} />
-          </label>
-          <label className="range-label">Altura <output>{activeCrop.height}px</output>
-            <input type="range" min={minimumCropSize} max={dimensions.height || minimumCropSize} value={activeCrop.height} disabled={!imageUrl} onChange={(event) => updateActiveCrop("height", Number(event.target.value))} />
-          </label>
-
-          <div className="downloads">
-            <button className="primary" disabled={!imageUrl || exporting !== null} onClick={() => download(active)}>{exporting === active ? "Preparando..." : `Baixar ${names[active] || INITIAL_NAMES[active]}${isGif ? " em GIF" : ""}`}</button>
-            <button className="secondary" disabled={!imageUrl || exporting !== null} onClick={downloadBoth}>{exporting === "both" ? "Preparando..." : "Baixar os dois"}</button>
-          </div>
-          <p className="hint">As duas áreas podem se sobrepor e ter proporções diferentes. Em GIF, todos os frames são recortados.</p>
-          {message && <p className="error-message" role="alert">{message}</p>}
-        </aside>
-      </section>
-
-      <section className="preview-panel" aria-labelledby="preview-title">
-        <div className="preview-heading">
-          <div>
-            <p className="eyebrow">PREVIEW</p>
-            <h2 id="preview-title">Como os dois vão ficar juntos</h2>
-          </div>
-          <small>O preview acompanha os recortes em tempo real.</small>
-        </div>
-
-        <div className="preview-grid">
-          {ICON_IDS.map((icon) => {
-            const crop = crops[icon];
-            const previewRatio = crop.width / crop.height;
-            return (
-              <article className="preview-card" key={icon} style={{ color: colors[icon] }}>
-                <div
-                  className="preview-frame"
-                  style={{
-                    aspectRatio: `${crop.width} / ${crop.height}`,
-                    borderColor: colors[icon],
-                    width: `min(100%, ${Math.round(360 * Math.min(1, previewRatio))}px)`,
+            {progress !== null && (
+              <div className="export-progress" role="status">
+                <label>
+                  Preparando arquivos: {progress}%
+                  <progress max={100} value={progress} />
+                </label>
+                <button
+                  onClick={() => {
+                    workerRef.current?.terminate();
+                    workerRef.current = null;
+                    setProgress(null);
+                    setMessage("Exportação cancelada.");
                   }}
                 >
-                  {imageUrl ? (
-                    <img
-                      src={imageUrl}
-                      alt={`Preview de ${names[icon] || INITIAL_NAMES[icon]}`}
-                      style={{
-                        left: `${-(crop.x / crop.width) * 100}%`,
-                        top: `${-(crop.y / crop.height) * 100}%`,
-                        width: `${(dimensions.width / crop.width) * 100}%`,
-                        height: `${(dimensions.height / crop.height) * 100}%`,
-                      }}
-                    />
-                  ) : (
-                    <span>Selecione ou arraste uma arte</span>
-                  )}
-                </div>
-                <h3>{names[icon] || INITIAL_NAMES[icon]}</h3>
-                <p>{imageUrl ? `${crop.width} × ${crop.height}px` : "Aguardando imagem"}</p>
-              </article>
-            );
-          })}
-        </div>
-      </section>
+                  Cancelar exportação
+                </button>
+              </div>
+            )}
+            {saving && <p role="status">Escolha onde salvar os arquivos…</p>}
+            {message && (
+              <p className="success-message" role="status">
+                {message}
+              </p>
+            )}
+            {error && (
+              <p className="error-message" role="alert">
+                {error}
+              </p>
+            )}
+          </section>
+        </aside>
+      </div>
+      <footer>
+        Matching Icon Cropper · 0.5.0 · Feito para duplas de qualquer universo
+      </footer>
     </main>
   );
 }
